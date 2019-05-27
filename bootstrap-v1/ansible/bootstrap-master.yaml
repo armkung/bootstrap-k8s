@@ -1,0 +1,134 @@
+- name: Init
+  shell: |
+    /sbin/swapoff -a
+    sed -i '/swap/d' /etc/fstab
+    setenforce 0
+    sed -i --follow-symlinks 's/SELINUX=enforcing/SELINUX=disabled/g' /etc/sysconfig/selinux
+    modprobe br_netfilter
+    echo '1' > /proc/sys/net/bridge/bridge-nf-call-iptables
+    echo '1' > /proc/sys/net/ipv4/ip_forward
+
+- stat:
+    path: /etc/yum.repos.d/kubernetes.repo
+  register: repo
+- name: Update yum repo
+  when: repo.stat.exists == false
+  ignore_errors: true
+  shell:
+    cmd: |
+      cat <<EOF > /etc/yum.repos.d/kubernetes.repo
+      [kubernetes]
+      name=Kubernetes
+      baseurl=https://packages.cloud.google.com/yum/repos/kubernetes-el7-x86_64
+      enabled=1
+      gpgcheck=1
+      repo_gpgcheck=1
+      gpgkey=https://packages.cloud.google.com/yum/doc/yum-key.gpg https://packages.cloud.google.com/yum/doc/rpm-package-key.gpg
+      exclude=kube*
+      EOF
+      yum update -y
+
+- name: Install ntp
+  shell: |
+    yum install ntp -y
+    systemctl start ntpd
+    systemctl enable ntpd
+
+- name: Install docker
+  shell: |
+    yum install -y http://mirror.centos.org/centos/7/extras/x86_64/Packages/container-selinux-2.68-1.el7.noarch.rpm
+    yum install -y yum-utils device-mapper-persistent-data lvm2
+    yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+    yum install -y docker-ce-{{ DOCKER_VERSION }}
+    systemctl enable docker
+    systemctl start docker
+
+- name: Install kubeadm
+  shell: |
+    yum install -y --disableexcludes=kubernetes \
+    kubelet-{{ K8S_VERSION }} \
+    kubeadm-{{ K8S_VERSION }} \
+    kubectl-{{ K8S_VERSION }}
+    systemctl enable kubelet
+    systemctl start kubelet
+
+- shell: kubectl cluster-info
+  ignore_errors: true
+  register: cluster_info
+- name: Create master
+  when: cluster_info is failed
+  shell: |
+    sysctl net.bridge.bridge-nf-call-iptables=1
+    # kubeadm init \
+    # --pod-network-cidr=192.168.0.0/16 \
+    # --apiserver-advertise-address={{ MASTER_IP }}
+    kubeadm init \
+    --pod-network-cidr=10.244.0.0/16 \
+    --apiserver-advertise-address={{ MASTER_IP }} \
+    --apiserver-cert-extra-sans={{ MASTER_IP }} \
+    --kubernetes-version=1.12.2
+
+- name: Copy config
+  ignore_errors: true
+  shell: |
+    mkdir -p /home/{{ DEFAULT_USER }}/.kube
+    mkdir -p $HOME/.kube
+    /bin/cp -f /etc/kubernetes/admin.conf $HOME/.kube/config
+    /bin/cp -f /etc/kubernetes/admin.conf /home/{{ DEFAULT_USER }}/.kube/config
+    chown -R {{ DEFAULT_USER }}:{{ DEFAULT_USER }} /home/{{ DEFAULT_USER }}/.kube
+
+- name: Enable pod creation on master
+  ignore_errors: true
+  shell: |
+    kubectl taint nodes --all node-role.kubernetes.io/master-
+
+- name: Set node label
+  ignore_errors: true
+  delegate_to: localhost
+  shell: | 
+    kubectl label node {{ MASTER_HOST }} role=master
+
+- name: Install calico
+  ignore_errors: true
+  shell: |
+    # kubectl apply -f https://docs.projectcalico.org/v3.2/getting-started/kubernetes/installation/hosted/etcd.yaml
+    # kubectl apply -f https://docs.projectcalico.org/v3.2/getting-started/kubernetes/installation/rbac.yaml
+    # kubectl apply -f https://docs.projectcalico.org/v3.2/getting-started/kubernetes/installation/hosted/calico.yaml
+    # kubectl patch daemonSet calico-node --type json --patch '[{"op": "replace", "path": "/spec/template/spec/containers/0/env/8/value", "value": "Never"}]' -n kube-system
+    kubectl apply -f https://docs.projectcalico.org/v3.2/getting-started/kubernetes/installation/hosted/canal/rbac.yaml
+    kubectl apply -f https://docs.projectcalico.org/v3.2/getting-started/kubernetes/installation/hosted/canal/canal.yaml
+
+- name: Install k8s dashboard
+  ignore_errors: true
+  shell: |
+    kubectl apply -f https://raw.githubusercontent.com/kubernetes/heapster/master/deploy/kube-config/influxdb/heapster.yaml -n kube-system
+    kubectl apply -f https://raw.githubusercontent.com/kubernetes/heapster/master/deploy/kube-config/influxdb/influxdb.yaml -n kube-system
+    kubectl apply -f https://raw.githubusercontent.com/kubernetes/heapster/master/deploy/kube-config/influxdb/grafana.yaml -n kube-system
+    kubectl patch deployment heapster --type json -n kube-system --patch \
+    '[{"op": "replace", "path": "/spec/template/spec/containers/0/command/1", "value":"--source=kubernetes:https://kubernetes.default?kubeletPort=10250&kubeletHttps=true&insecure=true"}]'
+      
+    kubectl create clusterrolebinding heapster --clusterrole=cluster-admin --serviceaccount=kube-system:heapster
+
+    kubectl apply -f https://raw.githubusercontent.com/kubernetes/dashboard/v1.10.0/src/deploy/recommended/kubernetes-dashboard.yaml -n kube-system
+    kubectl create clusterrolebinding kubernetes-dashboard --clusterrole=cluster-admin --serviceaccount=kube-system:kubernetes-dashboard
+
+- shell: which helm
+  ignore_errors: true
+  register: get_helm
+- name: Install helm
+  when: get_helm.rc != 0
+  ignore_errors: true
+  shell: |
+    curl https://raw.githubusercontent.com/helm/helm/master/scripts/get > get_helm.sh
+    chmod +x ./get_helm.sh
+    ./get_helm.sh --version v2.13.1
+
+    kubectl create serviceaccount --namespace kube-system tiller
+    kubectl create clusterrolebinding tiller-cluster-rule --clusterrole=cluster-admin --serviceaccount=kube-system:tiller
+    kubectl patch deploy --namespace kube-system tiller-deploy -p '{"spec":{"template":{"spec":{"serviceAccount":"tiller"}}}}'      
+    helm init --history-max 5 --service-account tiller --upgrade --node-selectors role=master --replicas 2
+
+- name: Create data
+  ignore_errors: true
+  shell: |
+    mkdir -p /data

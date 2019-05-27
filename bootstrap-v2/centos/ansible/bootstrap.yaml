@@ -1,0 +1,187 @@
+- hosts: master
+  strategy: free
+  environment:
+    PATH: "/usr/local/bin:{{ ansible_env.PATH }}"
+  tasks:
+    - set_fact:
+        DOCKER_VERSION: "18.03.1.ce-1.el7.centos"
+
+    - name: Bootstrap node
+      include_tasks: bootstrap-node.yaml
+
+    - name: Config firewall
+      ignore_errors: true
+      shell: |
+        firewall-cmd --permanent --add-port={6443,2379,2380,10250,10254,9099,30000-32767}/tcp
+        firewall-cmd --permanent --add-port={8472}/udp
+        firewall-cmd --reload
+
+- hosts: worker
+  strategy: free
+  environment:
+    PATH: "/usr/local/bin:{{ ansible_env.PATH }}"
+  tasks:
+    - set_fact:
+        DOCKER_VERSION: "18.03.1.ce-1.el7.centos"
+
+    - name: Bootstrap node
+      include_tasks: bootstrap-node.yaml
+
+    - name: Config firewall
+      ignore_errors: true
+      shell: |
+        firewall-cmd --permanent --add-port={10250,10254,30000-32767}/tcp
+        firewall-cmd --permanent --add-port={8472}/udp
+        firewall-cmd --reload
+
+- hosts: localhost
+  connection: local
+  tasks:
+    - name: Create cluster.yaml
+      ignore_errors: true
+      shell: |
+        cat > ../cluster.yaml << EOF
+        nodes:
+        {% for host in groups['all'] %}
+          - address: {{ host }}
+            internal_address: ""
+            port: "22"
+            role:
+        {% if hostvars[host]['group_names'][1] == 'master' %}
+              - controlplane
+              - worker
+              - etcd
+        {% else %}
+              - worker
+        {% endif %}
+            hostname_override: {{ hostvars[host]['name'] }}
+            user: {{ ansible_ssh_user }}
+            ssh_key: ""
+            ssh_key_path: ./key.pem
+            ssh_cert: ""
+            ssh_cert_path: ""
+            labels: {}
+        {% endfor %}
+        services:
+          etcd:
+            image: ""
+            extra_args: {}
+            extra_binds: []
+            extra_env: []
+            external_urls: []
+            ca_cert: ""
+            cert: ""
+            key: ""
+            path: ""
+            snapshot: null
+            retention: ""
+            creation: ""
+            backup_config: null
+          kube-api:
+            image: ""
+            extra_args: {}
+            extra_binds: []
+            extra_env: []
+            service_cluster_ip_range: 10.43.0.0/16
+            service_node_port_range: ""
+            pod_security_policy: false
+            always_pull_images: false
+          kube-controller:
+            image: ""
+            extra_args: {}
+            extra_binds: []
+            extra_env: []
+            cluster_cidr: 10.42.0.0/16
+            service_cluster_ip_range: 10.43.0.0/16
+          scheduler:
+            image: ""
+            extra_args: {}
+            extra_binds: []
+            extra_env: []
+          kubelet:
+            image: ""
+            extra_args: {}
+            extra_binds: []
+            extra_env: []
+            cluster_domain: cluster.local
+            infra_container_image: ""
+            cluster_dns_server: 10.43.0.10
+            fail_swap_on: false
+          kubeproxy:
+            image: ""
+            extra_args: {}
+            extra_binds: []
+            extra_env: []
+        network:
+          plugin: canal
+          options: {}
+        authentication:
+          strategy: x509
+          sans:
+            - 10.0.0.71
+          webhook: null
+        addons: ""
+        addons_include: []
+        system_images:
+          etcd: rancher/coreos-etcd:v3.2.24-rancher1
+          alpine: rancher/rke-tools:v0.1.27
+          nginx_proxy: rancher/rke-tools:v0.1.27
+          cert_downloader: rancher/rke-tools:v0.1.27
+          kubernetes_services_sidecar: rancher/rke-tools:v0.1.27
+          kubedns: rancher/k8s-dns-kube-dns:1.15.0
+          dnsmasq: rancher/k8s-dns-dnsmasq-nanny:1.15.0
+          kubedns_sidecar: rancher/k8s-dns-sidecar:1.15.0
+          kubedns_autoscaler: rancher/cluster-proportional-autoscaler:1.0.0
+          coredns: coredns/coredns:1.2.6
+          coredns_autoscaler: rancher/cluster-proportional-autoscaler:1.0.0
+          kubernetes: rancher/hyperkube:v1.14.1-rancher1
+          flannel: rancher/coreos-flannel:v0.10.0-rancher1
+          flannel_cni: rancher/flannel-cni:v0.3.0-rancher1
+          calico_node: rancher/calico-node:v3.4.0
+          calico_cni: rancher/calico-cni:v3.4.0
+          calico_controllers: ""
+          calico_ctl: rancher/calico-ctl:v2.0.0
+          canal_node: rancher/calico-node:v3.4.0
+          canal_cni: rancher/calico-cni:v3.4.0
+          canal_flannel: rancher/coreos-flannel:v0.10.0
+          weave_node: weaveworks/weave-kube:2.5.0
+          weave_cni: weaveworks/weave-npc:2.5.0
+          pod_infra_container: rancher/pause:3.1
+          ingress: rancher/nginx-ingress-controller:0.21.0-rancher3
+          ingress_backend: rancher/nginx-ingress-controller-defaultbackend:1.4-rancher1
+          metrics_server: rancher/metrics-server:v0.3.1
+        ssh_key_path: ~/.ssh/id_rsa
+        ssh_cert_path: ""
+        ssh_agent_auth: false
+        authorization:
+          mode: rbac
+          options: {}
+        ignore_docker_version: false
+        kubernetes_version: "v1.14.1-rancher1"
+        private_registries: []
+        ingress:
+          provider: none
+          options: {}
+          node_selector: {}
+          extra_args: {}
+        cluster_name: ""
+        cloud_provider:
+          name: ""
+        prefix_path: ""
+        addon_job_timeout: 0
+        bastion_host:
+          address: ""
+          port: ""
+          user: ""
+          ssh_key: ""
+          ssh_key_path: ""
+          ssh_cert: ""
+          ssh_cert_path: ""
+        monitoring:
+          provider: ""
+          options: {}
+        restore:
+          restore: false
+          snapshot_name: ""
+        dns: null
+        EOF

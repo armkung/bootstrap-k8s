@@ -1,0 +1,346 @@
+- hosts: master-*
+  tasks:
+    - set_fact:
+        CONFIG_PATH: "{{ hostvars[ansible_host]['config'] }}"
+
+    - name: Install helm chart
+      delegate_to: localhost
+      ignore_errors: true
+      shell: |
+        helm repo add rook-beta https://charts.rook.io/beta
+        helm --kubeconfig {{ CONFIG_PATH }} upgrade --wait --install \
+        --namespace rook-ceph-system \
+        --version v0.9.0 \
+        rook-ceph rook-beta/rook-ceph
+
+    - name: Init k8s
+      delegate_to: localhost
+      shell:
+        cmd: |
+          cat <<EOF | kubectl --kubeconfig {{ CONFIG_PATH }} apply -f -
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: rook-ceph
+          ---
+          apiVersion: v1
+          kind: ServiceAccount
+          metadata:
+            name: rook-ceph-osd
+            namespace: rook-ceph
+          ---
+          apiVersion: v1
+          kind: ServiceAccount
+          metadata:
+            name: rook-ceph-mgr
+            namespace: rook-ceph
+          ---
+          kind: Role
+          apiVersion: rbac.authorization.k8s.io/v1beta1
+          metadata:
+            name: rook-ceph-osd
+            namespace: rook-ceph
+          rules:
+          - apiGroups: [""]
+            resources: ["configmaps"]
+            verbs: [ "get", "list", "watch", "create", "update", "delete" ]
+          ---
+          # Aspects of ceph-mgr that require access to the system namespace
+          kind: Role
+          apiVersion: rbac.authorization.k8s.io/v1beta1
+          metadata:
+            name: rook-ceph-mgr-system
+            namespace: rook-ceph
+          rules:
+          - apiGroups:
+            - ""
+            resources:
+            - configmaps
+            verbs:
+            - get
+            - list
+            - watch
+          ---
+          # Aspects of ceph-mgr that operate within the cluster's namespace
+          kind: Role
+          apiVersion: rbac.authorization.k8s.io/v1beta1
+          metadata:
+            name: rook-ceph-mgr
+            namespace: rook-ceph
+          rules:
+          - apiGroups:
+            - ""
+            resources:
+            - pods
+            - services
+            verbs:
+            - get
+            - list
+            - watch
+          - apiGroups:
+            - batch
+            resources:
+            - jobs
+            verbs:
+            - get
+            - list
+            - watch
+            - create
+            - update
+            - delete
+          - apiGroups:
+            - ceph.rook.io
+            resources:
+            - "*"
+            verbs:
+            - "*"
+          ---
+          # Allow the operator to create resources in this cluster's namespace
+          kind: RoleBinding
+          apiVersion: rbac.authorization.k8s.io/v1beta1
+          metadata:
+            name: rook-ceph-cluster-mgmt
+            namespace: rook-ceph
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: ClusterRole
+            name: rook-ceph-cluster-mgmt
+          subjects:
+          - kind: ServiceAccount
+            name: rook-ceph-system
+            namespace: rook-ceph-system
+          ---
+          # Allow the osd pods in this namespace to work with configmaps
+          kind: RoleBinding
+          apiVersion: rbac.authorization.k8s.io/v1beta1
+          metadata:
+            name: rook-ceph-osd
+            namespace: rook-ceph
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: Role
+            name: rook-ceph-osd
+          subjects:
+          - kind: ServiceAccount
+            name: rook-ceph-osd
+            namespace: rook-ceph
+          ---
+          # Allow the ceph mgr to access the cluster-specific resources necessary for the mgr modules
+          kind: RoleBinding
+          apiVersion: rbac.authorization.k8s.io/v1beta1
+          metadata:
+            name: rook-ceph-mgr
+            namespace: rook-ceph
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: Role
+            name: rook-ceph-mgr
+          subjects:
+          - kind: ServiceAccount
+            name: rook-ceph-mgr
+            namespace: rook-ceph
+          ---
+          # Allow the ceph mgr to access the rook system resources necessary for the mgr modules
+          kind: RoleBinding
+          apiVersion: rbac.authorization.k8s.io/v1beta1
+          metadata:
+            name: rook-ceph-mgr-system
+            namespace: rook-ceph-system
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: Role
+            name: rook-ceph-mgr-system
+          subjects:
+          - kind: ServiceAccount
+            name: rook-ceph-mgr
+            namespace: rook-ceph
+          ---
+          # Allow the ceph mgr to access cluster-wide resources necessary for the mgr modules
+          kind: RoleBinding
+          apiVersion: rbac.authorization.k8s.io/v1beta1
+          metadata:
+            name: rook-ceph-mgr-cluster
+            namespace: rook-ceph
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: ClusterRole
+            name: rook-ceph-mgr-cluster
+          subjects:
+          - kind: ServiceAccount
+            name: rook-ceph-mgr
+            namespace: rook-ceph
+          ---
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: rook-ceph-tools
+            namespace: rook-ceph
+            labels:
+              app: rook-ceph-tools
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: rook-ceph-tools
+            template:
+              metadata:
+                labels:
+                  app: rook-ceph-tools
+              spec:
+                dnsPolicy: ClusterFirstWithHostNet
+                containers:
+                - name: rook-ceph-tools
+                  image: rook/ceph:v0.9.0
+                  command: ["/tini"]
+                  args: ["-g", "--", "/usr/local/bin/toolbox.sh"]
+                  imagePullPolicy: IfNotPresent
+                  env:
+                    - name: ROOK_ADMIN_SECRET
+                      valueFrom:
+                        secretKeyRef:
+                          name: rook-ceph-mon
+                          key: admin-secret
+                  securityContext:
+                    privileged: true
+                  volumeMounts:
+                    - mountPath: /dev
+                      name: dev
+                    - mountPath: /sys/bus
+                      name: sysbus
+                    - mountPath: /lib/modules
+                      name: libmodules
+                    - name: mon-endpoint-volume
+                      mountPath: /etc/rook
+                # if hostNetwork: false, the "rbd map" command hangs, see https://github.com/rook/rook/issues/2021
+                hostNetwork: true
+                volumes:
+                  - name: dev
+                    hostPath:
+                      path: /dev
+                  - name: sysbus
+                    hostPath:
+                      path: /sys/bus
+                  - name: libmodules
+                    hostPath:
+                      path: /lib/modules
+                  - name: mon-endpoint-volume
+                    configMap:
+                      name: rook-ceph-mon-endpoints
+                      items:
+                      - key: data
+                        path: mon-endpoints
+
+    - name: create CRD
+      delegate_to: localhost
+      shell:
+        cmd: |
+          cat <<EOF | kubectl --kubeconfig {{ CONFIG_PATH }} apply -f -
+          apiVersion: ceph.rook.io/v1
+          kind: CephCluster
+          metadata:
+            name: rook-ceph
+            namespace: rook-ceph
+          spec:
+            cephVersion:
+              image: ceph/ceph:v13.2
+              allowUnsupported: false
+            dataDirHostPath: /var/lib/rook
+            network:
+              hostNetwork: false
+            dashboard:
+              enabled: true
+              urlPrefix: /ceph
+            mon:
+              count: 3
+              allowMultiplePerNode: true
+            storage:
+              useAllNodes: true
+              useAllDevices: false
+              directories:
+                - path: "/storage"
+            # placement:
+            #   all:
+            #     nodeAffinity:
+            #       requiredDuringSchedulingIgnoredDuringExecution:
+            #         nodeSelectorTerms:
+            #           - matchExpressions:
+            #             - key: zone
+            #               operator: In
+            #               values:
+            #                 - dmz
+            #     tolerations:
+            #       - key: zone
+            #         operator: Exists
+          ---
+          apiVersion: ceph.rook.io/v1
+          kind: CephBlockPool
+          metadata:
+            name: replicapool
+            namespace: rook-ceph
+          spec:
+            failureDomain: host
+            replicated:
+              size: 2
+          ---
+          apiVersion: storage.k8s.io/v1
+          kind: StorageClass
+          metadata:
+            name: rook-ceph-block
+          provisioner: ceph.rook.io/block
+          reclaimPolicy: Retain
+          parameters:
+            blockPool: replicapool
+            clusterNamespace: rook-ceph
+          ---
+          # apiVersion: ceph.rook.io/v1
+          # kind: CephObjectStore
+          # metadata:
+          #   name: s3-store
+          #   namespace: rook-ceph
+          # spec:
+          #   metadataPool:
+          #     failureDomain: host
+          #     replicated:
+          #       size: 2
+          #   dataPool:
+          #     failureDomain: host
+          #     replicated:
+          #       size: 2
+          #     # erasureCoded:
+          #     #   dataChunks: 2
+          #     #   codingChunks: 1
+          #   gateway:
+          #     type: s3
+          #     port: 80
+          #     # securePort: 443
+          #     # sslCertificateRef:
+          #     allNodes: true
+          #     placement:
+          #       nodeAffinity:
+          #         requiredDuringSchedulingIgnoredDuringExecution:
+          #           nodeSelectorTerms:
+          #             - matchExpressions:
+          #               - key: zone
+          #                 operator: In
+          #                 values:
+          #                   - dmz
+          #       tolerations:
+          #         - key: zone
+          #           operator: Exists
+          #     # resources:
+          #     #   limits:
+          #     #     cpu: "500m"
+          #     #     memory: "1024Mi"
+          #     #   requests:
+          #     #     cpu: "500m"
+          #     #     memory: "1024Mi"
+          # ---
+          # apiVersion: ceph.rook.io/v1
+          # kind: CephObjectStoreUser
+          # metadata:
+          #   name: admin
+          #   namespace: rook-ceph
+          # spec:
+          #   store: s3-store
+          #   displayName: admin
+          EOF

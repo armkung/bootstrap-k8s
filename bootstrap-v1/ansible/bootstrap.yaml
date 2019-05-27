@@ -1,0 +1,58 @@
+- hosts: master-*
+  environment:
+    PATH: "/usr/local/bin:{{ ansible_env.PATH }}"
+  tasks:
+    - set_fact:
+        K8S_VERSION: "1.12.2"
+        DOCKER_VERSION: "17.12.1.ce-1.el7.centos"
+        CONFIG_PATH: "{{ hostvars[ansible_host]['config'] }}"
+        DEFAULT_USER: "{{ ansible_user }}"
+        MASTER_IP: "{{ ansible_host }}"
+        MASTER_HOST: "{{ hostvars[ansible_host]['name'] }}"
+
+    - name: Bootstrap Master
+      include_tasks: bootstrap-master.yaml
+
+    - name: Copy config
+      fetch:
+        src: "/home/{{ DEFAULT_USER }}/.kube/config"
+        dest: "{{ CONFIG_PATH }}"
+        flat: yes
+
+    - name: Install proxy server
+      ignore_errors: true
+      delegate_to: localhost
+      shell: |
+        kubectl --kubeconfig {{ CONFIG_PATH }} apply -Rf proxy-server -n default
+        kubectl --kubeconfig {{ CONFIG_PATH }} rollout status -w deployment/proxy-server -n default
+
+    - shell: kubeadm token create
+      register: TOKEN
+    - shell: openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt | openssl rsa -pubin -outform der 2>/dev/null | openssl dgst -sha256 -hex | sed 's/^.* //'
+      register: CA_CERT_HASH
+    - add_host:
+        name: MASTER
+        TOKEN: "{{ TOKEN.stdout }}"
+        CA_CERT_HASH: "{{ CA_CERT_HASH.stdout }}"
+        MASTER_IP: "{{ MASTER_IP }}"
+        MASTER_HOST: "{{ MASTER_HOST }}"
+
+- hosts: worker-*
+  strategy: free
+  environment:
+    PATH: "/usr/local/bin:{{ ansible_env.PATH }}"
+  tasks:
+    - set_fact:
+        K8S_VERSION: "1.12.2"
+        DOCKER_VERSION: "17.12.1.ce-1.el7.centos"
+        CONFIG_PATH: "{{ hostvars[ansible_host]['config'] }}"
+        DEFAULT_USER: "{{ ansible_user }}"
+        WORKER_IP: "{{ ansible_host }}"
+        WORKER_HOST: "{{ hostvars[ansible_host]['name'] }}"
+        MASTER_IP: "{{ hostvars['MASTER']['MASTER_IP'] }}"
+        MASTER_HOST: "{{ hostvars['MASTER']['MASTER_HOST'] }}"
+        TOKEN: "{{ hostvars['MASTER']['TOKEN'] }}"
+        CA_CERT_HASH: "{{ hostvars['MASTER']['CA_CERT_HASH'] }}"
+
+    - name: Bootstrap Worker
+      include_tasks: bootstrap-worker.yaml

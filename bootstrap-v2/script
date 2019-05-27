@@ -1,0 +1,35 @@
+.\start.ps1 -ManagementIP 10.0.0.36 -NetworkMode overlay -ClusterCIDR 10.42.0.0/16 -ServiceCIDR 10.43.0.0/16 -KubeDnsServiceIP 10.43.0.10 -LogDir C:\k\log
+.\register.ps1 -ManagementIP 10.0.0.36 -NetworkMode overlay -ClusterCIDR 10.42.0.0/16 -KubeDnsServiceIP 10.43.0.10 -LogDir C:\k\log
+
+[Environment]::SetEnvironmentVariable("DOCKER_DEFAULT_PLATFORM", "windows", "Machine")
+
+Install-Module DockerMsftProvider -Force
+Install-Package Docker -ProviderName DockerMsftProvider -Force
+Install-WindowsFeature Containers
+Restart-Computer -Force
+
+Install-WindowsFeature -name Web-Server -IncludeManagementTools
+
+docker pull mcr.microsoft.com/windows/nanoserver:1809
+docker tag mcr.microsoft.com/windows/nanoserver:1809 microsoft/nanoserver:latest
+docker tag mcr.microsoft.com/k8s/core/pause:1.0.0  kubeletwin/pause:latest
+docker run microsoft/nanoserver:latest
+
+docker image pull mcr.microsoft.com/dotnet/framework/samples:aspnetapp-windowsservercore-ltsc2019
+
+kubectl --kubeconfig config taint nodes ec2amaz-nlp2dqv os=windows:NoSchedule
+kubectl --kubeconfig config apply -f https://raw.githubusercontent.com/kubernetes/dashboard/v1.10.0/src/deploy/recommended/kubernetes-dashboard.yaml -n kube-system
+kubectl --kubeconfig config create clusterrolebinding kubernetes-dashboard --clusterrole=cluster-admin --serviceaccount=kube-system:kubernetes-dashboard
+kubectl --kubeconfig config create serviceaccount --namespace kube-system tiller
+kubectl --kubeconfig config create clusterrolebinding tiller-cluster-rule --clusterrole=cluster-admin --serviceaccount=kube-system:tiller
+kubectl --kubeconfig config patch deploy --namespace kube-system tiller-deploy -p '{"spec":{"template":{"spec":{"serviceAccount":"tiller"}}}}'      
+helm --kubeconfig config init --history-max 5 --service-account tiller --upgrade
+kubectl --kubeconfig config apply -f bootstrap/patch/canal-config.yaml
+
+New-NetFirewallRule -DisplayName "flannel vxlan" -Direction Inbound -LocalPort 8472 -Protocol UDP -Action Allow
+New-NetFirewallRule -DisplayName "flannel probe" -Direction Inbound -LocalPort 9099 -Protocol TCP -Action Allow
+New-NetFirewallRule -DisplayName "kubelet" -Direction Inbound -LocalPort 10250 -Protocol TCP -Action Allow
+New-NetFirewallRule -DisplayName "rancher agent" -Direction Outbound -LocalPort 443 -Protocol TCP -Action Allow
+New-NetFirewallRule -DisplayName "kube api server" -Direction Outbound -LocalPort 6443 -Protocol TCP -Action Allow
+New-NetFirewallRule -DisplayName "flannel vxlan" -Direction Outbound -LocalPort 8472 -Protocol UDP -Action Allow
+New-NetFirewallRule -DisplayName "flannel probe" -Direction Outbound -LocalPort 9099 -Protocol TCP -Action Allow

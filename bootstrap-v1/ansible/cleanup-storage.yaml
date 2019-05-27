@@ -1,0 +1,28 @@
+- hosts: master-*
+  tasks:
+    - set_fact:
+        CONFIG_PATH: "{{ hostvars[ansible_host]['config'] }}"
+
+    - name: Clear storage
+      delegate_to: localhost
+      ignore_errors: true
+      shell: |
+        helm --kubeconfig {{ CONFIG_PATH }} delete rook-ceph --purge
+        kubectl --kubeconfig {{ CONFIG_PATH }} -n rook-ceph patch cephcluster rook-ceph -p \
+        '{"metadata":{"finalizers": []}}' --type=merge
+
+        kubectl --kubeconfig {{ CONFIG_PATH }} delete -n rook-ceph pool replicapool
+        kubectl --kubeconfig {{ CONFIG_PATH }} delete storageclass rook-ceph-block
+        kubectl --kubeconfig {{ CONFIG_PATH }} delete sa rook-ceph-cluster
+        kubectl --kubeconfig {{ CONFIG_PATH }} delete role rook-ceph-cluster
+        kubectl --kubeconfig {{ CONFIG_PATH }} delete rolebinding rook-ceph-cluster
+        kubectl --kubeconfig {{ CONFIG_PATH }} delete rolebinding rook-ceph-cluster-mgmt
+        kubectl --kubeconfig {{ CONFIG_PATH }} delete namespace rook-ceph
+        kubectl --kubeconfig {{ CONFIG_PATH }} delete namespace rook-ceph-system
+
+- hosts: all
+  tasks:
+    - name: Clear data
+      ignore_errors: true
+      shell: |
+        rm -rf /var/lib/rook

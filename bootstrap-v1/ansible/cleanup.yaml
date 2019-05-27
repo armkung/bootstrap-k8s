@@ -1,0 +1,26 @@
+- hosts: all
+  tasks:
+    - set_fact:
+        CONFIG_PATH: "{{ hostvars[ansible_host]['config'] }}"
+        HOST: "{{ hostvars[ansible_host]['name'] }}"
+
+    - name: Delete node
+      delegate_to: localhost
+      shell: |
+        kubectl --kubeconfig {{ CONFIG_PATH }} drain {{ HOST }} --ignore-daemonsets --delete-local-data --force
+        kubectl --kubeconfig {{ CONFIG_PATH }} delete node {{ HOST }}
+
+- hosts: all
+  tasks:
+    - name: Reset node
+      shell: |
+        kubeadm reset -f
+        systemctl stop kubelet
+        systemctl stop docker
+        rm -rf /var/lib/cni/
+        rm -rf /var/lib/kubelet/*
+        rm -rf /run/flannel
+        rm -rf /etc/cni/
+        ifconfig cni0 down
+        ifconfig flannel.1 down
+        rm -rf ~/.kube/config

@@ -1,0 +1,74 @@
+- name: Init
+  shell: |
+    /sbin/swapoff -a
+    sed -i '/swap/d' /etc/fstab
+    setenforce 0
+    sed -i --follow-symlinks 's/SELINUX=enforcing/SELINUX=disabled/g' /etc/sysconfig/selinux
+    modprobe br_netfilter
+    echo '1' > /proc/sys/net/bridge/bridge-nf-call-iptables
+    echo '1' > /proc/sys/net/ipv4/ip_forward
+
+- stat:
+    path: /etc/yum.repos.d/kubernetes.repo
+  register: repo
+- name: Update yum repo
+  when: repo.stat.exists == false
+  shell:
+    cmd: |
+      cat <<EOF > /etc/yum.repos.d/kubernetes.repo
+      [kubernetes]
+      name=Kubernetes
+      baseurl=https://packages.cloud.google.com/yum/repos/kubernetes-el7-x86_64
+      enabled=1
+      gpgcheck=1
+      repo_gpgcheck=1
+      gpgkey=https://packages.cloud.google.com/yum/doc/yum-key.gpg https://packages.cloud.google.com/yum/doc/rpm-package-key.gpg
+      exclude=kube*
+      EOF
+      yum update -y
+
+- name: Install docker
+  shell: |
+    yum install -y http://mirror.centos.org/centos/7/extras/x86_64/Packages/container-selinux-2.68-1.el7.noarch.rpm
+    yum install -y yum-utils device-mapper-persistent-data lvm2
+    yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+    yum install -y docker-ce-{{ DOCKER_VERSION }}
+    systemctl enable docker
+    systemctl start docker
+
+- name: Install kubeadm
+  shell: |
+    yum install -y --disableexcludes=kubernetes \
+    kubelet-{{ K8S_VERSION }} \
+    kubeadm-{{ K8S_VERSION }} \
+    kubectl-{{ K8S_VERSION }}
+    systemctl enable kubelet
+    systemctl start kubelet
+
+- name: Connect proxy server
+  ignore_errors: true
+  shell: |
+    mkdir -p /etc/systemd/system/docker.service.d
+    cat <<EOF > /etc/systemd/system/docker.service.d/http-proxy.conf
+    [Service]
+    Environment="HTTP_PROXY=http://{{ MASTER_IP }}:32000"
+    EOF
+    systemctl daemon-reload
+    systemctl restart docker
+
+- name: Create worker
+  ignore_errors: true
+  shell: |
+    sysctl net.bridge.bridge-nf-call-iptables=1
+    kubeadm join --token {{ TOKEN }} {{ MASTER_IP }}:6443 \
+    --discovery-token-ca-cert-hash sha256:{{ CA_CERT_HASH }}
+
+- name: Set node label
+  ignore_errors: true
+  delegate_to: localhost
+  shell: | 
+    kubectl label node {{ WORKER_HOST }} role=worker
+
+- name: Create data
+  shell: |
+    mkdir -p /data

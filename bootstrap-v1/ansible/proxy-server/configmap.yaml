@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: proxy-server
+  labels:
+    name: proxy-server
+data:
+  squid.conf: |
+    http_port 3128
+
+    acl CONNECT method CONNECT
+    acl all src 0.0.0.0/0
+    acl allow_port port 443
+    acl allow_docker_hub_registry srcdomain .docker.io
+    acl allow_elastic_registry srcdomain .elastic.co
+    acl allow_google_registry srcdomain k8s.gcr.io
+    acl allow_quay_registry srcdomain quay.io
+
+    http_access allow allow_docker_hub_registry
+    http_access allow allow_elastic_registry
+    http_access allow allow_google_registry
+    http_access allow allow_quay_registry
+    http_access allow allow_port
+    http_access deny all

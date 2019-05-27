@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reverse-ssh
+  labels:
+    name: reverse-ssh
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      name: reverse-ssh
+  template:
+    metadata:
+      labels:
+        name: reverse-ssh
+    spec:
+      nodeSelector:
+        role: worker
+      containers:
+        - name: reverse-ssh
+          image: "armkung/reverse-ssh"
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 2222
+              protocol: TCP
+            - containerPort: 80
+              hostPort: 80
+              protocol: TCP
+            - containerPort: 443
+              hostPort: 443
+              protocol: TCP

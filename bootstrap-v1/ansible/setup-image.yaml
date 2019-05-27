@@ -1,0 +1,55 @@
+- hosts: "*-uat"
+  strategy: free
+  environment:
+    PATH: "/usr/local/bin:{{ ansible_env.PATH }}"
+  vars:
+    images:
+      master:
+        - tsli/appman.httprelay:0.1.2
+        - tsli/appman.tsli.paymentservices:encryption-v2
+        - tsli/appman.tsli.otpservice:0.1.59
+      worker:
+        - tsli/appman.tsli.web:0.1.5272
+        - tsli/appman.tsli.authenticationservice:0.1.11
+        - tsli/appman.tsli.ecmservice:0.1.52
+        - tsli/appman.tsli.pdfservice:0.1.58
+        - tsli/appman.tsli.emailservice:0.1.25
+        - tsli/appman.tsli.syncservice:0.1.65
+        - tsli/appman.tsli.eappservice:0.1.78
+        - tsli/appman.tsli.paymentservices:0.1.48
+  tasks:
+    - set_fact:
+        SRC_GROUP_NAME: "{{ hostvars[ansible_host]['group_names'][1] }}"
+    - set_fact:
+        GROUP_NAME: "{{ SRC_GROUP_NAME | regex_replace('-(.*)$', '') }}"
+        DST_GROUP_NAME: "{{ SRC_GROUP_NAME | regex_replace('uat', 'prod') }}"
+    - name: Save tarfile
+      shell: |
+        docker save {{ images[GROUP_NAME] | join(' ') }} -o {{ SRC_GROUP_NAME }}.tar
+    - name: Copy to remote server
+      delegate_to: "{{ item }}"
+      loop: "{{ groups[DST_GROUP_NAME] }}"
+      copy:
+        src: "{{ SRC_GROUP_NAME }}.tar"
+        dest: "{{ SRC_GROUP_NAME }}.tar"
+    - name: Delete tarfile
+      file:
+        path: "{{ SRC_GROUP_NAME }}.tar"
+        state: absent
+
+- hosts: "*-prod"
+  strategy: free
+  environment:
+    PATH: "/usr/local/bin:{{ ansible_env.PATH }}"
+  tasks:
+    - set_fact:
+        GROUP_NAME: "{{ hostvars[ansible_host]['group_names'][1] }}"
+    - set_fact:
+        FILE_NAME: "{{ GROUP_NAME | regex_replace('prod', 'uat') }}"
+    - name: Save tarfile
+      shell: |
+        docker load -i {{ FILE_NAME }}.tar
+    - name: Delete tarfile
+      file:
+        path: "{{ FILE_NAME }}.tar"
+        state: absent

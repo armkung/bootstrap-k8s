@@ -1,0 +1,10 @@
+*.pem
+config
+prod
+uat
+cluster.rkestate
+cluster.yaml
+kube-proxy.exe
+kubectl.exe
+kubelet.exe
+docker-registry.yaml

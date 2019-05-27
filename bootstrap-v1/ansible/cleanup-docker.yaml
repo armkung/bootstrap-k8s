@@ -1,0 +1,6 @@
+- hosts: all
+  tasks:
+    - name: Clean up docker image
+      shell: |
+        docker image prune -a
+

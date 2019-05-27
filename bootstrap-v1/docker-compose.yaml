@@ -1,0 +1,15 @@
+version: "3"
+services:
+  postgres:
+    image: postgres:11-alpine
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: 1q2w3e4r
+      POSTGRES_DB: tsli
+    command: |
+      postgres -c 'config_file=/var/lib/postgresql/postgresql.conf'
+    volumes:
+      - ./postgresql.conf:/var/lib/postgresql/postgresql.conf
+      - /data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"

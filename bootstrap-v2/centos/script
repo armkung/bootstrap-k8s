@@ -1,0 +1,19 @@
+setenforce 0
+sed -i 's/^SELINUX=enforcing$/SELINUX=permissive/' /etc/selinux/config
+
+cat > /etc/sysctl.d/kubernetes.conf << EOF
+net.ipv4.ip_forward = 1
+net.bridge.bridge-nf-call-ip6tables = 1
+net.bridge.bridge-nf-call-iptables = 1
+EOF
+
+modprobe br_netfilter
+swapoff -a
+sed -e '/swap/s/^/#/g' -i /etc/fstab
+
+
+firewall-cmd --permanent --add-port={6443,2379,2380,10250,10251,10252}/tcp
+firewall-cmd --reload
+
+firewall-cmd --permanent --add-port={10250,30000-32767}/tcp
+firewall-cmd --reload

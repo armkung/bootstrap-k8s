@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: proxy-server
+  labels:
+    name: proxy-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      name: proxy-server
+  template:
+    metadata:
+      labels:
+        name: proxy-server
+    spec:
+      nodeSelector:
+        role: master
+      containers:
+        - name: proxy-server
+          image: "sameersbn/squid:3.5.27"
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 3128
+              protocol: TCP
+          volumeMounts:
+            - name: config
+              mountPath: /etc/squid
+      volumes:
+        - name: config
+          configMap:
+            name: proxy-server
+            items:
+              - key: squid.conf
+                path: squid.conf
